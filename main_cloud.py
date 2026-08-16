@@ -148,7 +148,9 @@ def extract_clean_json(raw_text: str) -> dict:
     return {"is_relevant": False, "reason": "Failed to parse JSON output"}
 
 def evaluate_with_gemini(text: str) -> dict:
-    models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    # Use the active models matching your API project
+    models_to_try = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
+    
     for attempt in range(3):
         for model_name in models_to_try:
             try:
@@ -159,22 +161,35 @@ def evaluate_with_gemini(text: str) -> dict:
                         system_instruction=SYSTEM_PROMPT,
                         temperature=0.1,
                         safety_settings=[
-                            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-                            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                            types.SafetySetting(
+                                category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                                threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                            ),
+                            types.SafetySetting(
+                                category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                                threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                            ),
                         ]
                     )
                 )
-                time.sleep(4.2)
+                time.sleep(4.2)  # Maintain 15 RPM rate pacing
+                
                 if not response.candidates or not response.candidates[0].content.parts:
                     return {"is_relevant": False, "reason": "Blocked by Gemini Safety Filters"}
+                    
                 return extract_clean_json(response.text)
+
             except Exception as e:
                 err_str = str(e)
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                    time.sleep(25)
+                    wait_time = 25
+                    print(f"    [!] Quota rate limit. Waiting {wait_time}s...")
+                    time.sleep(wait_time)
                     break
                 else:
+                    print(f"    [-] LLM call error ({model_name}): {err_str[:120]}")
                     continue
+
     return {"is_relevant": False, "reason": "API error after retries"}
 
 def send_alert(url: str, analysis: dict, snippet: str):
