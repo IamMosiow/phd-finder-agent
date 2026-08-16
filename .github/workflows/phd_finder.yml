@@ -2,9 +2,8 @@ name: PhD Finder Daily Agent
 
 on:
   schedule:
-    # Runs twice every day at 06:00 UTC and 18:00 UTC (9:30 AM & 9:30 PM Iran time)
     - cron: '0 6,18 * * *'
-  workflow_dispatch: # Allows you to run it manually with a single click anytime!
+  workflow_dispatch:
 
 jobs:
   run-agent:
@@ -26,6 +25,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Ensure Data Directory Exists
+        run: |
+          mkdir -p data
+          if [ ! -f data/seen_posts.json ]; then echo "[]" > data/seen_posts.json; fi
+
       - name: Run PhD Finder Agent
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
@@ -39,4 +43,4 @@ jobs:
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add data/seen_posts.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update seen posts cache [skip ci]" && git push)
+          git diff --staged --quiet || (git commit -m "Auto-update seen posts cache [skip ci]" && git push)
