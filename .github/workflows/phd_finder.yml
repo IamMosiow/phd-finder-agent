@@ -1,0 +1,42 @@
+name: PhD Finder Daily Agent
+
+on:
+  schedule:
+    # Runs twice every day at 06:00 UTC and 18:00 UTC (9:30 AM & 9:30 PM Iran time)
+    - cron: '0 6,18 * * *'
+  workflow_dispatch: # Allows you to run it manually with a single click anytime!
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run PhD Finder Agent
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python main_cloud.py
+
+      - name: Commit and Push Updated Cache
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add data/seen_posts.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update seen posts cache [skip ci]" && git push)
