@@ -27,6 +27,11 @@ DATA_DIR = "data"
 SEEN_FILE = os.path.join(DATA_DIR, "seen_posts.json")
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# Initialize empty JSON array if file does not exist
+if not os.path.exists(SEEN_FILE):
+    with open(SEEN_FILE, "w", encoding="utf-8") as f:
+        json.dump([], f)
+
 MAX_POST_AGE_DAYS = 60
 PAGES_PER_CHANNEL = 5
 
