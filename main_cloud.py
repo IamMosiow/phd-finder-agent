@@ -27,7 +27,6 @@ DATA_DIR = "data"
 SEEN_FILE = os.path.join(DATA_DIR, "seen_posts.json")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# Initialize empty JSON array if file does not exist
 if not os.path.exists(SEEN_FILE):
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
         json.dump([], f)
@@ -35,7 +34,6 @@ if not os.path.exists(SEEN_FILE):
 MAX_POST_AGE_DAYS = 60
 PAGES_PER_CHANNEL = 5
 
-# Direct Cloud Session (No Proxy Needed on GitHub Actions)
 if HAS_CLOUDSCRAPER:
     session = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'linux', 'mobile': False})
 else:
@@ -56,8 +54,9 @@ CHANNELS_TO_SCRAPE = [
     "applyclub", "ApplyDaily", "computer_phd_apply", "EuropeanPhD"
 ]
 
+# Targeted regex for engineering / UWB / signal processing
 BROAD_PATTERNS = [
-    r"uwb", r"ultra[- ]wideband", r"indoor", r"localiz", r"position", r"sens", r"radar",
+    r"uwb", r"ultra[- ]wideband", r"indoor", r"localiz", r"position", r"radar",
     r"csi\b", r"cir\b", r"ranging", r"tof\b", r"tdoa\b", r"nlos", r"wireless", r"rf\b",
     r"fingerprint", r"channel impulse", r"channel state", r"signal processing", r"telecom",
     r"machine learning", r"deep learning", r"transformer", r"neural", r"transfer learning",
@@ -70,13 +69,29 @@ BROAD_PATTERNS = [
 
 EXCLUDE_PATTERNS = [
     r"ویزای همسر", r"ویزای کاری", r"تعیین وقت سفارت", r"کلاس زبان", r"آموزش آیلتس",
-    r"ielts class", r"immigration lawyer"
+    r"ielts class", r"immigration lawyer", r"organic chemistry", r"immunotherapy",
+    r"cardiovascular", r"public policy", r"tissue staining", r"oncology"
 ]
 
 ACADEMIC_SEARCH_QUERIES = [
-    "UWB localization", "indoor positioning", "wireless sensing",
-    "channel state information", "sensor fusion localization",
-    "FPGA signal processing", "edge AI sensing", "radar positioning"
+    "UWB",
+    "indoor positioning",
+    "indoor localization",
+    "wireless sensing",
+    "channel state information",
+    "sensor fusion localization",
+    "FPGA signal processing",
+    "edge AI",
+    "radar positioning"
+]
+
+EURAXESS_QUERIES = [
+    "UWB",
+    "indoor localization",
+    "indoor positioning",
+    "wireless sensing",
+    "RF localization",
+    "FPGA signal processing"
 ]
 
 SYSTEM_PROMPT = """You are an expert academic evaluator. Assess if a PhD vacancy post matches the candidate's research profile.
@@ -148,9 +163,7 @@ def extract_clean_json(raw_text: str) -> dict:
     return {"is_relevant": False, "reason": "Failed to parse JSON output"}
 
 def evaluate_with_gemini(text: str) -> dict:
-    # Use the active models matching your API project
     models_to_try = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
-    
     for attempt in range(3):
         for model_name in models_to_try:
             try:
@@ -161,35 +174,22 @@ def evaluate_with_gemini(text: str) -> dict:
                         system_instruction=SYSTEM_PROMPT,
                         temperature=0.1,
                         safety_settings=[
-                            types.SafetySetting(
-                                category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                                threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                            ),
-                            types.SafetySetting(
-                                category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                                threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                            ),
+                            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
                         ]
                     )
                 )
-                time.sleep(4.2)  # Maintain 15 RPM rate pacing
-                
+                time.sleep(4.2)
                 if not response.candidates or not response.candidates[0].content.parts:
                     return {"is_relevant": False, "reason": "Blocked by Gemini Safety Filters"}
-                    
                 return extract_clean_json(response.text)
-
             except Exception as e:
                 err_str = str(e)
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                    wait_time = 25
-                    print(f"    [!] Quota rate limit. Waiting {wait_time}s...")
-                    time.sleep(wait_time)
+                    time.sleep(25)
                     break
                 else:
-                    print(f"    [-] LLM call error ({model_name}): {err_str[:120]}")
                     continue
-
     return {"is_relevant": False, "reason": "API error after retries"}
 
 def send_alert(url: str, analysis: dict, snippet: str):
@@ -305,6 +305,9 @@ def scrape_findaphd_direct(seen: set):
             cards = soup.find_all("div", class_="phd-result-row") or soup.find_all("div", class_="w-100")
             valid_cards = [c for c in cards if c.find("a", class_="apply-link") or c.find("h3")]
             
+            if valid_cards:
+                print(f"  [>] FindAPhD ('{kw}'): Found {len(valid_cards)} listings.")
+            
             for card in valid_cards[:6]:
                 title_elem = card.find("a", class_="apply-link") or card.find("h3") or card.find("a")
                 if not title_elem:
@@ -339,7 +342,7 @@ def scrape_findaphd_direct(seen: set):
 
 def scrape_euraxess_direct(seen: set):
     print("\n🇪🇺 Scanning EURAXESS (EU MSCA & Funded Positions)...")
-    for kw in ["localization", "sensing", "ultra-wideband", "FPGA"]:
+    for kw in EURAXESS_QUERIES:
         try:
             search_url = f"https://euraxess.ec.europa.eu/jobs/search?keywords={urllib.parse.quote_plus(kw)}"
             resp = session.get(search_url, timeout=25)
@@ -355,6 +358,9 @@ def scrape_euraxess_direct(seen: set):
                 title = a.get_text(strip=True)
                 if len(title) > 15 and href not in unique_jobs:
                     unique_jobs[href] = title
+            
+            if unique_jobs:
+                print(f"  [>] EURAXESS ('{kw}'): Found {len(unique_jobs)} listings.")
             
             for href, title in list(unique_jobs.items())[:6]:
                 link = f"https://euraxess.ec.europa.eu{href}"
