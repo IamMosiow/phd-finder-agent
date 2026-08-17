@@ -2,7 +2,8 @@ name: PhD Finder Daily Agent
 
 on:
   schedule:
-    - cron: '0 6,18 * * *'
+    # Runs once every 24 hours at 06:17 UTC (~9:47 AM Iran Time)
+    - cron: '17 6 * * *'
   workflow_dispatch:
 
 jobs:
