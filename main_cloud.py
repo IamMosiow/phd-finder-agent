@@ -6,6 +6,7 @@ import warnings
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 import requests
+import feedparser
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
@@ -92,6 +93,20 @@ EURAXESS_QUERIES = [
     "wireless sensing",
     "RF localization",
     "FPGA signal processing"
+]
+
+NEW_ACADEMIC_PORTALS = [
+    # jobs.ac.uk (UK Universities: Imperial, Manchester, Southampton, etc.)
+    "https://www.jobs.ac.uk/feeds/subject-areas/electrical-and-electronic-engineering",
+    "https://www.jobs.ac.uk/feeds/subject-areas/computer-science",
+    
+    # AcademicTransfer (Dutch Universities: TU Delft, TU Eindhoven, Twente)
+    "https://www.academictransfer.com/en/jobs/rss/?q=PhD+engineering",
+    "https://www.academictransfer.com/en/jobs/rss/?q=PhD+localization",
+    
+    # European / International Academic Boards
+    "https://academicpositions.com/feed/rss?field=computer-science-electrical-engineering",
+    "https://academicpositions.com/feed/rss?field=telecommunications-engineering"
 ]
 
 SYSTEM_PROMPT = """You are an expert academic evaluator. Assess if a PhD vacancy post matches the candidate's research profile.
@@ -396,16 +411,65 @@ def scrape_euraxess_direct(seen: set):
         except Exception:
             pass
 
+def scrape_academic_rss_feeds(seen: set):
+    """Scrapes jobs.ac.uk, AcademicTransfer, and European academic feeds."""
+    print("\n🎓 Scanning High-Yield Academic Portals (jobs.ac.uk & AcademicTransfer)...")
+    for feed_url in NEW_ACADEMIC_PORTALS:
+        try:
+            resp = session.get(feed_url, timeout=25)
+            if resp.status_code != 200:
+                continue
+            
+            feed = feedparser.parse(resp.content)
+            feed_name = feed_url.split('/')[-1]
+            if feed.entries:
+                print(f"  [>] Feed '{feed_name}': Found {len(feed.entries)} entries.")
+            
+            for entry in feed.entries:
+                uid = entry.get("id", entry.link)
+                if uid in seen:
+                    continue
+                
+                if hasattr(entry, "published_parsed") and entry.published_parsed:
+                    pub_dt = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                    if not is_recent_date(pub_dt):
+                        mark_as_seen(uid, seen)
+                        continue
+                        
+                content = f"{entry.title}\n{entry.get('summary', '')}"
+                if len(content) < 30 or not fast_prefilter(content):
+                    mark_as_seen(uid, seen)
+                    continue
+                    
+                print(f"[+] Evaluating Academic Vacancy: {entry.title[:55]}...")
+                analysis = evaluate_with_gemini(content)
+                
+                if analysis.get("is_relevant"):
+                    send_alert(entry.link, analysis, content)
+                    print(f"    [✓] MATCH CONFIRMED (Tier {analysis.get('tier')} - Score {analysis.get('confidence_score')}/10) -> Alert Sent!")
+                else:
+                    print(f"    [-] Skipped: {analysis.get('reason', 'Filtered by LLM')}")
+                    
+                mark_as_seen(uid, seen)
+                
+        except Exception as e:
+            print(f"  [-] Academic feed error for '{feed_url[:40]}...': {e}")
+
 def main():
     print("🚀 Running PhD Finder Agent on Cloud...")
     seen = load_seen()
     print(f"📂 Cached database has {len(seen)} items.")
     
+    # 1. Telegram Channels
     for ch in CHANNELS_TO_SCRAPE:
         scrape_telegram_channel_deep(ch, seen)
         
+    # 2. International Academic Direct Scrapers
     scrape_findaphd_direct(seen)
     scrape_euraxess_direct(seen)
+    
+    # 3. New High-Yield Academic Portals (UK & Dutch University Portals)
+    scrape_academic_rss_feeds(seen)
     
     print("✅ Run complete. Exiting cleanly.")
 
