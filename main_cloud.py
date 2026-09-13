@@ -52,7 +52,8 @@ ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 CHANNELS_TO_SCRAPE = [
     "expertapply", "ApplyIR2UK", "applyforfree", "pargarwiki",
-    "applyclub", "ApplyDaily", "computer_phd_apply", "EuropeanPhD"
+    "applyclub", "ApplyDaily", "computer_phd_apply", "EuropeanPhD",
+    "PargarPositions"
 ]
 
 # Targeted regex for engineering / UWB / signal processing
