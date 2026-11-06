@@ -4,7 +4,7 @@ import time
 import re
 import warnings
 import urllib.parse
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 import requests
 import feedparser
 from bs4 import BeautifulSoup
@@ -114,9 +114,14 @@ SYSTEM_PROMPT = """You are an expert academic evaluator. Assess if a PhD vacancy
 
 Candidate Profile:
 - Tier 1 (Direct Match): UWB, Ultra-Wideband, indoor positioning/localization (موقعیت‌یابی داخل ساختمان), wireless sensing, RF sensing, CIR, CSI, ToF, TDoA, NLOS conditions, fingerprinting-based positioning. Combinations of localization with ML/Deep Learning.
+
 - Tier 2 (Adjacent): Robust wireless localization, wireless communications, signal processing (پردازش سیگنال), domain adaptation, self-supervised learning, Transformers, uncertainty estimation, GNNs, sensor fusion (UWB+IMU/Vision), Autonomous robot localization/SLAM, medical signal processing.
+
 - Tier 3 (Electronics/Hardware): FPGA acceleration, SDR, embedded AI, Edge AI / TinyML, low-power digital systems design, DAQ (Data Acquisition), IoT sensor networks.
+
 - Disqualifiers (REJECT): Pure mechanical robotics (robotic arms manipulation), prosthetics, medical wet-lab biology, pure chemistry, theoretical math without RF/sensing/signal focus, visa advertisements, language courses. (Note: Robot indoor localization/SLAM IS acceptable).
+
+If an application deadline is mentioned in the text, extract it in YYYY-MM-DD format (otherwise set "deadline" to null).
 
 Respond ONLY in valid JSON:
 {
@@ -125,7 +130,8 @@ Respond ONLY in valid JSON:
   "confidence_score": 9,
   "title": "Short title",
   "key_topics": ["topic1", "topic2"],
-  "reason": "1-line explanation of fit"
+  "reason": "1-line explanation of fit",
+  "deadline": "YYYY-MM-DD or null"
 }"""
 
 def load_seen():
@@ -178,14 +184,77 @@ def extract_clean_json(raw_text: str) -> dict:
         pass
     return {"is_relevant": False, "reason": "Failed to parse JSON output"}
 
+def get_deadline_line(analysis: dict, snippet: str) -> str:
+    """Checks extracted deadline or text for dates and returns a bold emoji warning if <= 30 days away."""
+    today = datetime.now(timezone.utc).date()
+    found_dates = []
+
+    raw_dl = analysis.get("deadline")
+    if raw_dl and str(raw_dl).lower() not in ["null", "none", "n/a", ""]:
+        for m in re.finditer(r'\b(202\d)[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b', str(raw_dl)):
+            try:
+                found_dates.append(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+            except ValueError:
+                pass
+
+    # Fallback regex check on the snippet if a deadline keyword is present
+    if not found_dates and re.search(r'deadline|closing date|apply by|application closes|آخرین مهلت|ددلاین', snippet, re.IGNORECASE):
+        for m in re.finditer(r'\b(202\d)[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b', snippet):
+            try:
+                found_dates.append(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+            except ValueError:
+                pass
+
+        for m in re.finditer(r'\b(0?[1-9]|[12]\d|3[01])[./-](0?[1-9]|1[0-2])[./-](202\d)\b', snippet):
+            try:
+                found_dates.append(date(int(m.group(3)), int(m.group(2)), int(m.group(1))))
+            except ValueError:
+                pass
+
+        months = {
+            'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+            'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
+        }
+        month_pat = r'(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+
+        for m in re.finditer(rf'\b(0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\s+{month_pat}(?:[\s,]+(202\d))?\b', snippet, re.IGNORECASE):
+            try:
+                d = int(m.group(1))
+                mo = months[m.group(2)[:3].lower()]
+                yr = int(m.group(3)) if m.group(3) else today.year
+                found_dates.append(date(yr, mo, d))
+            except ValueError:
+                pass
+
+        for m in re.finditer(rf'\b{month_pat}\s+(0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?(?:[\s,]+(202\d))?\b', snippet, re.IGNORECASE):
+            try:
+                mo = months[m.group(1)[:3].lower()]
+                d = int(m.group(2))
+                yr = int(m.group(3)) if m.group(3) else today.year
+                found_dates.append(date(yr, mo, d))
+            except ValueError:
+                pass
+
+    future_dates = sorted(set(d for d in found_dates if (d - today).days >= 0))
+    if not future_dates:
+        return ""
+
+    nearest = future_dates[0]
+    days_left = (nearest - today).days
+    if days_left <= 30:
+        return f"🚨⏳ *URGENT DEADLINE WARNING: {nearest.strftime('%Y-%m-%d')} (Only {days_left} days left!)* ⚠️\n"
+    else:
+        return f"📅 *Deadline:* {nearest.strftime('%Y-%m-%d')} ({days_left} days left)\n"
+
 def evaluate_with_gemini(text: str) -> dict:
     models_to_try = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]
     for attempt in range(3):
         for model_name in models_to_try:
             try:
+                today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 response = ai_client.models.generate_content(
                     model=model_name,
-                    contents=f"Evaluate this PhD post:\n\n{text[:2000]}",
+                    contents=f"Today's date is {today_str}. Evaluate this PhD post:\n\n{text[:2000]}",
                     config=types.GenerateContentConfig(
                         system_instruction=SYSTEM_PROMPT,
                         temperature=0.1,
@@ -220,13 +289,15 @@ def send_alert(url: str, analysis: dict, snippet: str):
     topics_list = analysis.get("key_topics", [])
     topics = ", ".join(topics_list) if isinstance(topics_list, list) else str(topics_list)
     reason = analysis.get("reason", "Matches research profile.")
+    deadline_line = get_deadline_line(analysis, snippet)
 
     msg = (
         f"🎯 *New PhD Match!*\n"
         f"*Category:* {label}\n"
         f"*Score:* {score}/10\n"
         f"*Title:* {title}\n"
-        f"*Topics:* `{topics}`\n\n"
+        f"*Topics:* `{topics}`\n"
+        f"{deadline_line}\n"
         f"💡 *Reason:* {reason}\n\n"
         f"🔗 [Open Vacancy / Post]({url})\n"
         f"────────────────────\n"
