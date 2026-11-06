@@ -110,6 +110,31 @@ NEW_ACADEMIC_PORTALS = [
     "https://academicpositions.com/feed/rss?field=telecommunications-engineering"
 ]
 
+# LinkedIn Scholarship & PhD Pages + Targeted PhD Job Queries
+LINKEDIN_COMPANIES = [
+    "scholarshippk",          # Scholarship Network / PhD & Postdoc postings
+    "euraxess",               # Official EU Researcher Mobility & PhD portal
+    "academicpositions",      # European Academic & PhD Vacancies
+    "findaphd",               # FindAPhD official LinkedIn updates
+    "academictransfer",       # Dutch University PhD & Research positions
+    "phd-hub",                # European PhD Hub
+    "imec",                   # IMEC (Microelectronics, RF, Edge AI PhDs)
+    "tu-delft",               # TU Delft vacancies
+    "eth-zurich",             # ETH Zurich vacancies
+    "epfl"                    # EPFL vacancies
+]
+
+LINKEDIN_PHD_QUERIES = [
+    "PhD UWB",
+    "PhD indoor localization",
+    "PhD wireless sensing",
+    "PhD FPGA",
+    "PhD signal processing",
+    "PhD radar",
+    "PhD embedded AI",
+    "Doctoral Researcher localization"
+]
+
 SYSTEM_PROMPT = """You are an expert academic evaluator. Assess if a PhD vacancy post matches the candidate's research profile.
 
 Candidate Profile:
@@ -527,6 +552,105 @@ def scrape_academic_rss_feeds(seen: set):
         except Exception as e:
             print(f"  [-] Academic feed error for '{feed_url[:40]}...': {e}")
 
+def scrape_linkedin_sources(seen: set):
+    """Scrapes public LinkedIn scholarship/PhD company pages and LinkedIn's open Guest Jobs API."""
+    print("\n💼 Scanning LinkedIn Pages & PhD Job Feeds...")
+
+    # Part A: Public Company Page Posts (e.g., company/scholarshippk, euraxess, etc.)
+    for comp in LINKEDIN_COMPANIES:
+        try:
+            comp_url = f"https://www.linkedin.com/company/{comp}"
+            resp = session.get(comp_url, timeout=20)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                post_cards = soup.find_all("article") or soup.find_all("div", class_=re.compile(r"feed-shared-update| main-feed-card"))
+                if post_cards:
+                    print(f"  [>] LinkedIn Page ('{comp}'): Found {len(post_cards)} public updates.")
+                for card in post_cards[:6]:
+                    text = card.get_text(separator="\n", strip=True)
+                    link_tag = card.find("a", href=re.compile(r"linkedin\.com/(posts|feed/update)"))
+                    link = link_tag.get("href").split("?")[0] if link_tag and link_tag.get("href") else f"{comp_url}/posts/"
+                    uid = link if link != f"{comp_url}/posts/" else f"li_{comp}_{hash(text[:120])}"
+
+                    if uid in seen or len(text) < 40 or not fast_prefilter(text):
+                        mark_as_seen(uid, seen)
+                        continue
+
+                    print(f"[+] Evaluating LinkedIn page post ({comp}): {text[:50]}...")
+                    analysis = evaluate_with_gemini(text)
+                    if analysis.get("is_relevant"):
+                        send_alert(link, analysis, text)
+                        print(f"    [✓] MATCH CONFIRMED (Tier {analysis.get('tier')}) -> Alert Sent!")
+                    else:
+                        print(f"    [-] Skipped: {analysis.get('reason', 'Filtered by LLM')}")
+                    mark_as_seen(uid, seen)
+        except Exception:
+            pass
+
+    # Part B: LinkedIn Open Guest Jobs API for PhD / Doctoral Positions (past 7 days)
+    for kw in LINKEDIN_PHD_QUERIES:
+        try:
+            api_url = (
+                f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?"
+                f"keywords={urllib.parse.quote_plus(kw)}&f_TPR=r604800&start=0"
+            )
+            resp = session.get(api_url, timeout=20)
+            if resp.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            job_cards = soup.find_all("li")
+            if job_cards:
+                print(f"  [>] LinkedIn Jobs ('{kw}'): Found {len(job_cards)} listings.")
+
+            for card in job_cards[:6]:
+                link_elem = card.find("a", class_=re.compile(r"base-card__full-link")) or card.find("a")
+                title_elem = card.find("h3", class_=re.compile(r"base-search-card__title"))
+                org_elem = card.find("h4", class_=re.compile(r"base-search-card__subtitle"))
+
+                if not link_elem or not title_elem:
+                    continue
+
+                link = link_elem.get("href", "").split("?")[0]
+                title = title_elem.get_text(strip=True)
+                org = org_elem.get_text(strip=True) if org_elem else ""
+
+                if not link or link in seen:
+                    continue
+
+                # Fetch full job description from LinkedIn guest job view
+                desc = ""
+                job_id_match = re.search(r"-(\d+)\??$", link) or re.search(r"view/(\d+)", link)
+                if job_id_match:
+                    job_id = job_id_match.group(1)
+                    detail_url = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
+                    try:
+                        d_resp = session.get(detail_url, timeout=15)
+                        if d_resp.status_code == 200:
+                            d_soup = BeautifulSoup(d_resp.text, "html.parser")
+                            desc_div = d_soup.find("div", class_=re.compile(r"show-more-less-html__markup|description__text"))
+                            if desc_div:
+                                desc = desc_div.get_text(separator="\n", strip=True)
+                    except Exception:
+                        pass
+
+                full_text = f"{title} at {org}\n{desc}"[:2000]
+                if len(full_text) < 35 or not fast_prefilter(full_text):
+                    mark_as_seen(link, seen)
+                    continue
+
+                print(f"[+] Evaluating LinkedIn PhD vacancy: {title[:55]}...")
+                analysis = evaluate_with_gemini(full_text)
+                if analysis.get("is_relevant"):
+                    send_alert(link, analysis, full_text)
+                    print(f"    [✓] MATCH CONFIRMED (Tier {analysis.get('tier')}) -> Alert Sent!")
+                else:
+                    print(f"    [-] Skipped: {analysis.get('reason', 'Filtered by LLM')}")
+
+                mark_as_seen(link, seen)
+        except Exception:
+            pass
+
 def main():
     print("🚀 Running PhD Finder Agent on Cloud...")
     seen = load_seen()
@@ -542,6 +666,9 @@ def main():
     
     # 3. New High-Yield Academic Portals (UK & Dutch University Portals)
     scrape_academic_rss_feeds(seen)
+    
+    # 4. LinkedIn Pages & Public PhD Job Feeds
+    scrape_linkedin_sources(seen)
     
     print("✅ Run complete. Exiting cleanly.")
 
